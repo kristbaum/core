@@ -3,8 +3,14 @@
 from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aioubus import HostapdClients, parse_dnsmasq_leases
+from aioubus.models import parse_odhcpd_leases
 import pytest
-from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    load_fixture,
+    load_json_object_fixture,
+)
 
 from homeassistant.components.ubus.const import (
     CONF_DHCP_SOFTWARE,
@@ -22,7 +28,7 @@ MOCK_CONFIG = {
     CONF_DHCP_SOFTWARE: DEFAULT_DHCP_SOFTWARE,
 }
 
-MAC_PHONE = "AA:BB:CC:DD:EE:FF"
+MAC_PHONE = "aa:bb:cc:dd:ee:ff"
 MAC_LAPTOP = "11:22:33:44:55:66"
 MAC_GUEST = "99:88:77:66:55:44"
 
@@ -53,45 +59,23 @@ def mock_config_entry(dhcp_software: str) -> MockConfigEntry:
 
 
 @pytest.fixture
-def mock_ubus() -> Generator[MagicMock]:
-    """Mock the Ubus client with the raw router API responses."""
+def mock_ubus_client() -> Generator[MagicMock]:
+    """Mock the aioubus client with parsed router responses."""
     with (
-        patch("homeassistant.components.ubus.coordinator.Ubus", autospec=True) as mock,
-        patch("homeassistant.components.ubus.config_flow.Ubus", new=mock),
+        patch(
+            "homeassistant.components.ubus.coordinator.UbusClient", autospec=True
+        ) as mock_client,
+        patch("homeassistant.components.ubus.config_flow.UbusClient", new=mock_client),
     ):
-        instance = mock.return_value
-        instance.session_id = None
-
-        def _connect() -> str:
-            instance.session_id = "session-id"
-            return "session-id"
-
-        instance.connect.side_effect = _connect
-        instance.get_hostapd.return_value = {"hostapd.wlan0": {}}
-        instance.get_hostapd_clients.return_value = {
-            "clients": {
-                MAC_PHONE: {"authorized": True},
-                MAC_LAPTOP: {"authorized": True},
-                MAC_GUEST: {"authorized": False},
-            }
-        }
-        instance.get_uci_config.return_value = {
-            "values": {"cfg01": {"leasefile": "/var/dhcp/dnsmasq.leases"}}
-        }
-        instance.file_read.return_value = {
-            "data": (
-                "1600000000 aa:bb:cc:dd:ee:ff 192.168.1.10 my-phone *\n"
-                "1600000000 11:22:33:44:55:66 192.168.1.11 my-laptop *"
-            )
-        }
-        instance.get_dhcp_method.return_value = {
-            "device": {
-                "br-lan": {
-                    "leases": [
-                        {"mac": "aabbccddeeff", "hostname": "my-phone"},
-                        {"mac": "112233445566", "hostname": "my-laptop"},
-                    ]
-                }
-            }
-        }
-        yield mock
+        client = mock_client.return_value
+        client.list_hostapd_interfaces.return_value = ("phy0-ap0",)
+        client.get_hostapd_clients.return_value = HostapdClients.from_json(
+            "phy0-ap0", load_json_object_fixture("hostapd_clients.json", DOMAIN)
+        )
+        client.get_dnsmasq_leases.return_value = parse_dnsmasq_leases(
+            load_fixture("dhcp.leases", DOMAIN)
+        )
+        client.get_odhcpd_ipv4_leases.return_value = parse_odhcpd_leases(
+            load_json_object_fixture("odhcpd_ipv4leases.json", DOMAIN)
+        )
+        yield mock_client

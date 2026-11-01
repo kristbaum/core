@@ -2067,6 +2067,8 @@ CLAUDE.md @home-assistant/core
 /tests/components/twinkly/ @dr1rrb @Robbie1221 @Olen
 /homeassistant/components/twitch/ @joostlek
 /tests/components/twitch/ @joostlek
+/homeassistant/components/ubus/ @kristbaum
+/tests/components/ubus/ @kristbaum
 /homeassistant/components/uhoo/ @getuhoo @joshsmonta
 /tests/components/uhoo/ @getuhoo @joshsmonta
 /homeassistant/components/ukraine_alarm/ @PaulAnnekov

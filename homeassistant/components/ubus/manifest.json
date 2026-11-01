@@ -5,12 +5,12 @@
     "presence_location.network_presence",
     "computers_network.routers_network"
   ],
-  "codeowners": [],
+  "codeowners": ["@kristbaum"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/ubus",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "loggers": ["openwrt"],
+  "loggers": ["aioubus"],
   "quality_scale": "legacy",
-  "requirements": ["openwrt-ubus-rpc==0.0.3"]
+  "requirements": ["aioubus==0.4.0"]
 }

@@ -4,11 +4,12 @@ from datetime import timedelta
 import logging
 from typing import override
 
-from openwrt.ubus import Ubus
+from aioubus import DnsmasqLease, OdhcpdLease, UbusClient, UbusError
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_DHCP_SOFTWARE, DOMAIN
@@ -29,13 +30,13 @@ class UbusDataUpdateCoordinator(DataUpdateCoordinator[dict[str, str | None]]):
         """Initialize the coordinator from a config entry."""
         self.host: str = config_entry.data[CONF_HOST]
         self.dhcp_software: str = config_entry.data[CONF_DHCP_SOFTWARE]
-        self.ubus = Ubus(
-            f"http://{self.host}/ubus",
+        self.client = UbusClient(
+            self.host,
             config_entry.data[CONF_USERNAME],
             config_entry.data[CONF_PASSWORD],
+            session=async_get_clientsession(hass),
         )
-        self._hostapd: list[str] = []
-        self._leasefile: str | None = None
+        self._hostapd: tuple[str, ...] = ()
         self._mac2name: dict[str, str] | None = None
 
         super().__init__(
@@ -49,115 +50,39 @@ class UbusDataUpdateCoordinator(DataUpdateCoordinator[dict[str, str | None]]):
     @override
     async def _async_update_data(self) -> dict[str, str | None]:
         """Return the currently connected devices keyed by MAC address."""
-        return await self.hass.async_add_executor_job(self._update)
-
-    def _update(self) -> dict[str, str | None]:
-        """Query the router, re-authenticating once if the session expired."""
-        if self.ubus.session_id is None:
-            self._login()
         try:
-            return self._read_clients()
-        except PermissionError:
-            # The router dropped our session (e.g. after a reboot); log back in.
-            self._login()
-        try:
-            return self._read_clients()
-        except PermissionError as err:
-            raise UpdateFailed(f"Access denied by ubus at {self.host}") from err
+            clients = await self._async_fetch_authorized_clients()
+            if self._mac2name is None:
+                self._mac2name = await self._async_generate_mac2name()
+        except UbusError as err:
+            raise UpdateFailed(f"Error querying ubus at {self.host}: {err}") from err
+        return {mac: self._mac2name.get(mac) for mac in clients}
 
-    def _login(self) -> None:
-        """Open a ubus session, raising UpdateFailed on failure."""
-        try:
-            session_id = self.ubus.connect()
-        except (ConnectionError, PermissionError, TypeError) as err:
-            # openwrt-ubus-rpc raises TypeError when the HTTP request itself
-            # fails, because it subscripts a None response.
-            raise UpdateFailed(f"Error connecting to ubus at {self.host}") from err
-        if session_id is None:
-            raise UpdateFailed(f"Invalid credentials for ubus at {self.host}")
+    async def _async_fetch_authorized_clients(self) -> set[str]:
+        """Return the MAC addresses of authorized clients on all interfaces."""
+        if not self._hostapd:
+            if not (hostapd := await self.client.list_hostapd_interfaces()):
+                raise UpdateFailed(f"No hostapd data from ubus at {self.host}")
+            self._hostapd = hostapd
+        authorized: set[str] = set()
+        for interface in self._hostapd:
+            result = await self.client.get_hostapd_clients(interface)
+            authorized.update(
+                mac for mac, client in result.clients.items() if client.authorized
+            )
+        return authorized
 
-    def _read_clients(self) -> dict[str, str | None]:
-        """Return authorized clients mapped to their DHCP hostname.
-
-        PermissionError is left to propagate so the caller can re-authenticate.
-        """
-        clients = self._fetch_hostapd_clients()
-        if self._mac2name is None:
-            self._mac2name = self._generate_mac2name()
-        return {
-            mac: self._name_for(mac)
-            for mac, client in clients.items()
-            if client["authorized"]
-        }
-
-    def _fetch_hostapd_clients(self) -> dict[str, dict]:
-        """Return the raw hostapd client table merged across all interfaces."""
-        try:
-            if not self._hostapd:
-                if not (hostapd := self.ubus.get_hostapd()):
-                    raise UpdateFailed(f"No hostapd data from ubus at {self.host}")
-                self._hostapd = list(hostapd)
-            clients: dict[str, dict] = {}
-            for interface in self._hostapd:
-                if result := self.ubus.get_hostapd_clients(interface):
-                    clients.update(result["clients"])
-        except ConnectionError as err:
-            raise UpdateFailed(f"Error querying ubus at {self.host}") from err
-        return clients
-
-    def _name_for(self, mac: str) -> str | None:
-        """Return the DHCP hostname for a MAC address, if known."""
-        if self._mac2name is None:
-            return None
-        return self._mac2name.get(mac.upper())
-
-    def _generate_mac2name(self) -> dict[str, str] | None:
+    async def _async_generate_mac2name(self) -> dict[str, str]:
         """Build the MAC-to-hostname map for the configured DHCP software."""
+        leases: tuple[DnsmasqLease, ...] | tuple[OdhcpdLease, ...]
         if self.dhcp_software == "dnsmasq":
-            return self._dnsmasq_mac2name()
-        if self.dhcp_software == "odhcpd":
-            return self._odhcpd_mac2name()
-        return {}
-
-    def _dnsmasq_mac2name(self) -> dict[str, str] | None:
-        """Read the dnsmasq lease file. Returns None to retry if unavailable."""
-        try:
-            if self._leasefile is None:
-                if not (result := self.ubus.get_uci_config("dhcp", "dnsmasq")):
-                    return None
-                self._leasefile = next(iter(result["values"].values()))["leasefile"]
-            result = self.ubus.file_read(self._leasefile)
-        except ConnectionError as err:
-            raise UpdateFailed(
-                f"Error reading leases from ubus at {self.host}"
-            ) from err
-
-        if not result:
-            return None
-
-        mac2name = {}
-        for line in result["data"].splitlines():
-            hosts = line.split(" ")
-            mac2name[hosts[1].upper()] = hosts[3]
-        return mac2name
-
-    def _odhcpd_mac2name(self) -> dict[str, str] | None:
-        """Read the odhcpd leases. Returns None to retry if unavailable."""
-        try:
-            result = self.ubus.get_dhcp_method("ipv4leases")
-        except ConnectionError as err:
-            raise UpdateFailed(
-                f"Error reading leases from ubus at {self.host}"
-            ) from err
-
-        if not result:
-            return None
-
-        mac2name = {}
-        for device in result["device"].values():
-            for lease in device["leases"]:
-                mac = ":".join(
-                    lease["mac"][i : i + 2] for i in range(0, len(lease["mac"]), 2)
-                )
-                mac2name[mac.upper()] = lease["hostname"]
-        return mac2name
+            leases = await self.client.get_dnsmasq_leases()
+        elif self.dhcp_software == "odhcpd":
+            leases = await self.client.get_odhcpd_ipv4_leases()
+        else:
+            return {}
+        return {
+            lease.mac: lease.hostname
+            for lease in leases
+            if lease.mac and lease.hostname
+        }

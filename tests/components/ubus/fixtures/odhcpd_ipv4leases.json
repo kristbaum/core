@@ -1,0 +1,22 @@
+{
+  "device": {
+    "br-lan": {
+      "leases": [
+        {
+          "mac": "aabbccddeeff",
+          "hostname": "my-phone",
+          "address": "192.168.1.10",
+          "valid": 43000,
+          "flags": ["bound"]
+        },
+        {
+          "mac": "112233445566",
+          "hostname": "my-laptop",
+          "address": "192.168.1.11",
+          "valid": 43000,
+          "flags": ["bound"]
+        }
+      ]
+    }
+  }
+}

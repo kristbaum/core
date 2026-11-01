@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+from aioubus import UbusConnectionError
 import pytest
 from pytest_homeassistant.common import MockConfigEntry
 
@@ -33,7 +34,7 @@ from .conftest import MAC_GUEST, MAC_LAPTOP, MAC_PHONE, MOCK_CONFIG, MOCK_HOST
 )
 async def test_only_authorized_clients_are_tracked(
     hass: HomeAssistant,
-    mock_ubus: MagicMock,
+    mock_ubus_client: MagicMock,
     mock_config_entry: MockConfigEntry,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
@@ -60,7 +61,7 @@ async def test_only_authorized_clients_are_tracked(
 
 
 async def test_setup_scanner_imports_yaml(
-    hass: HomeAssistant, mock_ubus: MagicMock
+    hass: HomeAssistant, mock_ubus_client: MagicMock
 ) -> None:
     """Test the legacy YAML platform imports itself into a config entry."""
     assert await async_setup_component(
@@ -87,11 +88,11 @@ async def test_setup_scanner_imports_yaml(
 
 async def test_setup_scanner_creates_issue_on_cannot_connect(
     hass: HomeAssistant,
-    mock_ubus: MagicMock,
+    mock_ubus_client: MagicMock,
     issue_registry: ir.IssueRegistry,
 ) -> None:
     """Test a repair issue is raised when the YAML import cannot connect."""
-    mock_ubus.return_value.connect.side_effect = TypeError
+    mock_ubus_client.return_value.login.side_effect = UbusConnectionError("boom")
 
     assert await async_setup_component(
         hass,
