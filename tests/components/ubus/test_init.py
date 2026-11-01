@@ -89,6 +89,7 @@ async def test_host_formats(
 
     assert mock_ubus_client.call_args.args[0] == expected_host
     assert mock_ubus_client.call_args.kwargs["port"] == expected_port
+    assert mock_ubus_client.call_args.kwargs["verify_ssl"] is False
 
 
 @pytest.mark.parametrize(

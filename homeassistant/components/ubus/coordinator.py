@@ -43,6 +43,8 @@ def async_create_client(hass: HomeAssistant, data: Mapping[str, Any]) -> UbusCli
         data[CONF_PASSWORD],
         port=port,
         session=async_get_clientsession(hass),
+        # Routers redirecting HTTP to HTTPS serve self-signed certificates.
+        verify_ssl=False,
     )
 
 
