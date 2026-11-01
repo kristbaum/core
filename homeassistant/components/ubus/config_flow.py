@@ -2,12 +2,11 @@
 
 from typing import Any, override
 
-from aioubus import UbusAuthenticationError, UbusClient, UbusError
+from aioubus import UbusAuthenticationError, UbusError
 import probatio
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
@@ -15,6 +14,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import CONF_DHCP_SOFTWARE, DEFAULT_DHCP_SOFTWARE, DHCP_SOFTWARES, DOMAIN
+from .coordinator import async_create_client
 
 STEP_USER_DATA_SCHEMA = probatio.Schema(
     {
@@ -41,13 +41,7 @@ class UbusConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_validate_connection(self, data: dict[str, Any]) -> None:
         """Validate that we can log in to the router with the given configuration."""
-        client = UbusClient(
-            data[CONF_HOST],
-            data[CONF_USERNAME],
-            data[CONF_PASSWORD],
-            session=async_get_clientsession(self.hass),
-        )
-        await client.login()
+        await async_create_client(self.hass, data).login()
 
     @override
     async def async_step_user(
@@ -61,7 +55,7 @@ class UbusConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self._async_validate_connection(user_input)
             except UbusAuthenticationError:
                 errors["base"] = "invalid_auth"
-            except UbusError:
+            except UbusError, ValueError:
                 errors["base"] = "cannot_connect"
             else:
                 return self.async_create_entry(
@@ -80,7 +74,7 @@ class UbusConfigFlow(ConfigFlow, domain=DOMAIN):
             await self._async_validate_connection(import_data)
         except UbusAuthenticationError:
             return self.async_abort(reason="invalid_auth")
-        except UbusError:
+        except UbusError, ValueError:
             return self.async_abort(reason="cannot_connect")
 
         return self.async_create_entry(title=import_data[CONF_HOST], data=import_data)

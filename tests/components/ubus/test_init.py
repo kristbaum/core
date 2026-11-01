@@ -7,18 +7,22 @@ from aioubus import (
     HostapdClients,
     UbusAuthenticationError,
     UbusConnectionError,
+    UbusError,
+    UbusNotFoundError,
     UbusPermissionError,
 )
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
+from homeassistant.components.ubus.const import DOMAIN
 from homeassistant.components.ubus.coordinator import UPDATE_INTERVAL
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .conftest import MAC_GUEST, MAC_LAPTOP, MAC_PHONE
+from .conftest import MAC_GUEST, MAC_LAPTOP, MAC_PHONE, MOCK_CONFIG
 
 
 @pytest.mark.parametrize(
@@ -40,11 +44,6 @@ from .conftest import MAC_GUEST, MAC_LAPTOP, MAC_PHONE
             {"side_effect": UbusPermissionError("access denied")},
             id="access_denied",
         ),
-        pytest.param(
-            "get_dnsmasq_leases",
-            {"side_effect": UbusPermissionError("access denied")},
-            id="leases_denied",
-        ),
     ],
 )
 async def test_setup_retry(
@@ -62,6 +61,77 @@ async def test_setup_retry(
     await hass.async_block_till_done()
 
     assert mock_config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+@pytest.mark.parametrize(
+    ("host", "expected_host", "expected_port"),
+    [
+        pytest.param("192.168.1.1", "192.168.1.1", None, id="ipv4"),
+        pytest.param("router.lan", "router.lan", None, id="hostname"),
+        pytest.param("192.168.1.1:8080", "192.168.1.1", 8080, id="ipv4_port"),
+        pytest.param("fd00::1", "fd00::1", None, id="ipv6"),
+        pytest.param("[fd00::1]", "fd00::1", None, id="ipv6_brackets"),
+        pytest.param("[fd00::1]:8080", "fd00::1", 8080, id="ipv6_port"),
+    ],
+)
+async def test_host_formats(
+    hass: HomeAssistant,
+    mock_ubus_client: MagicMock,
+    host: str,
+    expected_host: str,
+    expected_port: int | None,
+) -> None:
+    """Test stored hosts with a port or bracketed IPv6 address still connect."""
+    entry = MockConfigEntry(domain=DOMAIN, data={**MOCK_CONFIG, CONF_HOST: host})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_ubus_client.call_args.args[0] == expected_host
+    assert mock_ubus_client.call_args.kwargs["port"] == expected_port
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(UbusNotFoundError("no lease file"), id="no_lease_file"),
+        pytest.param(UbusPermissionError("access denied"), id="access_denied"),
+    ],
+)
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_leases_unavailable(
+    hass: HomeAssistant,
+    mock_ubus_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    entity_registry: er.EntityRegistry,
+    freezer: FrozenDateTimeFactory,
+    error: UbusError,
+) -> None:
+    """Test clients are tracked without hostnames until the leases can be read."""
+    client = mock_ubus_client.return_value
+    leases = client.get_dnsmasq_leases.return_value
+    client.get_dnsmasq_leases.side_effect = error
+
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    entity_id = entity_registry.async_get_entity_id("device_tracker", DOMAIN, MAC_PHONE)
+    assert entity_id
+    state = hass.states.get(entity_id)
+    assert state
+    assert state.state == "home"
+    assert "host_name" not in state.attributes
+
+    client.get_dnsmasq_leases.side_effect = None
+    client.get_dnsmasq_leases.return_value = leases
+    freezer.tick(UPDATE_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state
+    assert state.attributes["host_name"] == "my-phone"
 
 
 async def test_clients_merged_across_interfaces(

@@ -1,10 +1,13 @@
 """DataUpdateCoordinator for the OpenWrt (ubus) integration."""
 
+from collections.abc import Mapping
 from datetime import timedelta
+from ipaddress import ip_address
 import logging
-from typing import override
+from typing import Any, override
 
 from aioubus import DnsmasqLease, OdhcpdLease, UbusClient, UbusError
+from yarl import URL
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
@@ -21,6 +24,28 @@ UPDATE_INTERVAL = timedelta(seconds=30)
 type UbusConfigEntry = ConfigEntry[UbusDataUpdateCoordinator]
 
 
+def async_create_client(hass: HomeAssistant, data: Mapping[str, Any]) -> UbusClient:
+    """Create a ubus client for the configured router.
+
+    The host may carry a port or a bracketed IPv6 address. Raises ValueError
+    if it is not a valid host.
+    """
+    host: str = data[CONF_HOST]
+    port: int | None = None
+    try:
+        ip_address(host)
+    except ValueError:
+        url = URL(f"http://{host}")
+        host, port = url.host or host, url.explicit_port
+    return UbusClient(
+        host,
+        data[CONF_USERNAME],
+        data[CONF_PASSWORD],
+        port=port,
+        session=async_get_clientsession(hass),
+    )
+
+
 class UbusDataUpdateCoordinator(DataUpdateCoordinator[dict[str, str | None]]):
     """Fetch the authorized wireless clients from an OpenWrt router over ubus."""
 
@@ -30,12 +55,7 @@ class UbusDataUpdateCoordinator(DataUpdateCoordinator[dict[str, str | None]]):
         """Initialize the coordinator from a config entry."""
         self.host: str = config_entry.data[CONF_HOST]
         self.dhcp_software: str = config_entry.data[CONF_DHCP_SOFTWARE]
-        self.client = UbusClient(
-            self.host,
-            config_entry.data[CONF_USERNAME],
-            config_entry.data[CONF_PASSWORD],
-            session=async_get_clientsession(hass),
-        )
+        self.client = async_create_client(hass, config_entry.data)
         self._hostapd: tuple[str, ...] = ()
         self._mac2name: dict[str, str] | None = None
 
@@ -52,11 +72,16 @@ class UbusDataUpdateCoordinator(DataUpdateCoordinator[dict[str, str | None]]):
         """Return the currently connected devices keyed by MAC address."""
         try:
             clients = await self._async_fetch_authorized_clients()
-            if self._mac2name is None:
-                self._mac2name = await self._async_generate_mac2name()
         except UbusError as err:
             raise UpdateFailed(f"Error querying ubus at {self.host}: {err}") from err
-        return {mac: self._mac2name.get(mac) for mac in clients}
+        if self._mac2name is None:
+            try:
+                self._mac2name = await self._async_generate_mac2name()
+            except UbusError as err:
+                # Hostnames are optional; keep tracking and retry next update.
+                _LOGGER.debug("Error reading leases from %s: %s", self.host, err)
+        mac2name = self._mac2name or {}
+        return {mac: mac2name.get(mac) for mac in clients}
 
     async def _async_fetch_authorized_clients(self) -> set[str]:
         """Return the MAC addresses of authorized clients on all interfaces."""

@@ -61,12 +61,9 @@ def mock_config_entry(dhcp_software: str) -> MockConfigEntry:
 @pytest.fixture
 def mock_ubus_client() -> Generator[MagicMock]:
     """Mock the aioubus client with parsed router responses."""
-    with (
-        patch(
-            "homeassistant.components.ubus.coordinator.UbusClient", autospec=True
-        ) as mock_client,
-        patch("homeassistant.components.ubus.config_flow.UbusClient", new=mock_client),
-    ):
+    with patch(
+        "homeassistant.components.ubus.coordinator.UbusClient", autospec=True
+    ) as mock_client:
         client = mock_client.return_value
         client.list_hostapd_interfaces.return_value = ("phy0-ap0",)
         client.get_hostapd_clients.return_value = HostapdClients.from_json(

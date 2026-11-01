@@ -68,6 +68,27 @@ async def test_user_flow_cannot_connect(
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
+async def test_user_flow_invalid_host(
+    hass: HomeAssistant, mock_setup_entry: AsyncMock, mock_ubus_client: MagicMock
+) -> None:
+    """Test the user flow reports a host that isn't a valid address."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={**USER_INPUT, CONF_HOST: "router.lan:abc"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    mock_ubus_client.assert_not_called()
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=USER_INPUT
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
 async def test_user_flow_invalid_auth(
     hass: HomeAssistant, mock_setup_entry: AsyncMock, mock_ubus_client: MagicMock
 ) -> None:
